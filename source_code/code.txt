@@ -1,0 +1,165 @@
+import pandas as pd
+import re
+from nltk.corpus import stopwords
+from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
+from nltk.tokenize import word_tokenize
+from sklearn.feature_selection import chi2
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, ConfusionMatrixDisplay, confusion_matrix
+import matplotlib.pyplot as plt
+
+df = pd.read_excel("dataset_tugas.xlsx")
+df = df.drop("No", axis=1)
+X = df.drop("Label", axis=1)
+Y = df['Label']
+
+def case_folding(data):
+    """
+    Lower case kalimat
+    menghilangkan new line, karakter selain huruf dan spasi, 
+    serta angka
+
+    """
+    data = data.lower()
+    data = data.replace('\n',' ')               
+    data = re.sub('[^\w\s]+', ' ',data)         
+    data = re.sub('\d+', '', data)             
+    return data
+
+X['Reviews'] = X['Reviews'].apply(case_folding)
+
+def tokenisasi(text):
+    return word_tokenize(text)
+
+X['Reviews_token'] = X["Reviews"].apply(tokenisasi)
+
+kamus_alay = pd.read_csv("colloquial-indonesian-lexicon.csv")
+kamus_alay = kamus_alay.filter(['slang', 'formal'], axis=1)
+
+dict_normalisasi1 = dict(kamus_alay.values)
+dict_normalisasi2 = {
+    "murceeee" : "murah",
+    "thank" : "terima kasih",
+    "enggak" : "tidak",
+    "makasihh" : "terima kasih",
+    "badaiii" : "badai",
+    "pertahankann" : "pertahankan",
+    "chek" : "cek",
+    "tengkyu" : "terima kasih",
+    "dtang" : "datang",
+    "terimakasih" : "terima kasih",
+    "papa" : "kenapa",
+    "banget" : "sangat",
+    "kayak" : "seperti",
+    "cuman" : "hanya",
+    "kalo" : "kalau",
+    "pcs" : "pieces",
+    "tau" : "tahu",
+    "gede" : "besar",
+    "nih" : "ini",
+    "oke" : "bagus",
+    "kak" : "kakak"
+}
+def normalisasi_pertama(document):
+    """
+    Melakukan normalisasi kata berdasarkan data pada kamus_alay
+    Me-return list baru yang berisi token yang sudah berkata baku sesuai dengan data
+    """
+    return [
+        dict_normalisasi1[token] if token in dict_normalisasi1 else token
+        for token in document
+    ]
+
+def normalisasi_kedua(document):
+    """
+    Melakukan normalisasi kata berdasarkan data yang sudah didefinisikan sebelumnya (static)
+    Me-return list baru yang berisi token yang sudah berkata baku sesuai dengan data
+    """
+    return [
+        dict_normalisasi2[token] if token in dict_normalisasi2 else token
+        for token in document
+    ]
+
+X["Reviews_normalisasi"] = X['Reviews_token'].apply(normalisasi_pertama).apply(normalisasi_kedua)
+
+list_stopwords = stopwords.words('indonesian')
+stopwords_buatan = ["nya","lu","sih","hhe"]
+list_stopwords_baru = list_stopwords + stopwords_buatan
+
+
+def hapus_stopwords(words):
+    """
+    Me-return list baru yang berisi kata yang tidak berada di list stopwords
+    """
+    return [
+        word for word in words if word not in list_stopwords_baru
+    ]
+
+X["Reviews_stopword"] = X["Reviews_normalisasi"].apply(hapus_stopwords)
+
+factory = StemmerFactory()
+stemmer = factory.create_stemmer()
+
+
+def stemming(term):
+    return stemmer.stem(term)
+
+X["Reviews_clean"] = [' '.join(map(str, l)) for l in X["Reviews_stopword"]]
+X["Reviews_stem"] = X["Reviews_clean"].apply(stemming)
+
+documents = X['Reviews_stem']
+vectorizer = TfidfVectorizer()
+X_tfidf = vectorizer.fit_transform(documents)
+
+chi2_scores, _ = chi2(X_tfidf, Y)
+scores_dict = dict(zip(vectorizer.get_feature_names_out(), chi2_scores))
+
+"""
+    Eksperimen nilai fitur terbaik dari chi square
+    10% = 181
+    20% = 363
+    30% = 544
+"""
+k=544
+top_features = sorted(scores_dict, key=scores_dict.get, reverse=True)[:k]
+
+new_vectorizer = TfidfVectorizer(vocabulary=top_features)
+X_new = new_vectorizer.fit_transform(documents)
+feature_names = new_vectorizer.get_feature_names_out()
+df_tfidf = pd.DataFrame(X_new.toarray(), columns=feature_names)
+
+X_train,X_test,Y_train,Y_test=train_test_split(df_tfidf,Y,test_size=0.2,random_state=21)
+
+"""
+Eksperimen nilai k=3, 5, 7, 9
+"""
+model = KNeighborsClassifier(n_neighbors=9)
+model.fit(X_train, Y_train)
+y_pred = model.predict(X_test)
+accuracy_score(Y_test, y_pred)
+
+accuracy_model = accuracy_score(Y_test, y_pred)
+precision_model = precision_score(Y_test, y_pred)
+recall_model = recall_score(Y_test, y_pred)
+skor_f1_model = f1_score(Y_test, y_pred)
+
+print("Akurasi ", accuracy_model)
+print("Precision ", precision_model)
+print("Recall ", recall_model)
+print("F1-skor ", skor_f1_model)
+
+
+cm = confusion_matrix(Y_test, y_pred, labels=model.classes_)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=model.classes_)
+disp.plot()
+plt.title("Confusion Matrix dengan nilai chi square 544 dan k = 9")
+
+import pickle
+with open('new_vectorizer.pkl', 'wb') as f:
+    pickle.dump(new_vectorizer, f)
+
+with open('knn_model.pkl', 'wb') as f:
+    pickle.dump(model, f)
+
